@@ -236,8 +236,8 @@ class SpatialModel(BaseModel, metaclass=ABCMeta):
             'grid_type': 'rectangular',
             # Below threshold, percept has brightness zero:
             'thresh_percept': 0,
-            # Retinotopic map to be used:
-            'retinotopy': Curcio1990Map(),
+            # Visual field map (retinotopy) to be used:
+            'vfmap': Curcio1990Map(),
             # Number of gray levels to use in the percept:
             'n_gray': None,
             # Salt-and-pepper noise on the output:
@@ -248,6 +248,8 @@ class SpatialModel(BaseModel, metaclass=ABCMeta):
             'n_jobs': 1,
             # True: print status messages, 0: silent
             'verbose': True,
+            # default to 2d model. 3d models should override this
+            'ndim' : [2],
             'n_threads': multiprocessing.cpu_count()
         }
         return params
@@ -277,9 +279,12 @@ class SpatialModel(BaseModel, metaclass=ABCMeta):
             setattr(self, key, val)
         # import at runtime to avoid circular import
         from ..topography import Grid2D
+        if self.vfmap.ndim not in self.ndim:
+            raise ValueError(f"Model expects one of {self.ndim} dimensions, but "
+                             f"visual field map has {self.vfmap.ndim} dimensions.")
         self.grid = Grid2D(self.xrange, self.yrange, step=self.xystep,
                            grid_type=self.grid_type)
-        self.grid.build(self.retinotopy)
+        self.grid.build(self.vfmap)
         self._build()
         self.is_built = True
         return self

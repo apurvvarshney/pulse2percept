@@ -2,7 +2,7 @@
 
 from ..base import Model, SpatialModel
 from ...topography import Polimeni2006Map
-from .._beyeler2019 import fast_scoreboard
+from .._beyeler2019 import fast_scoreboard, fast_scoreboard_3d
 from ...utils.constants import ZORDER
 import numpy as np
 
@@ -15,6 +15,51 @@ class CortexSpatial(SpatialModel):
     2) Handling of multiple visual regions via regions property
     3) Plotting, including multiple visual regions, legends, vertical 
        divide at longitudinal fissure, etc.
+
+    Parameters:
+    -----------
+    regions : list of str, optional
+        The regions to simulate. Options are any combination of 'v1', 'v2', 'v3'. 
+        Default: ['v1']. 
+    rho : double, optional
+        Exponential decay constant describing current spread size (microns).
+    xrange : (x_min, x_max), optional
+        A tuple indicating the range of x values to simulate (in degrees of
+        visual angle). In a right eye, negative x values correspond to the
+        temporal retina, and positive x values to the nasal retina. In a left
+        eye, the opposite is true.
+    yrange : tuple, (y_min, y_max), optional
+        A tuple indicating the range of y values to simulate (in degrees of
+        visual angle). Negative y values correspond to the superior retina,
+        and positive y values to the inferior retina.
+    xystep : int, double, tuple, optional
+        Step size for the range of (x,y) values to simulate (in degrees of
+        visual angle). For example, to create a grid with x values [0, 0.5, 1]
+        use ``xrange=(0, 1)`` and ``xystep=0.5``.
+    grid_type : {'rectangular', 'hexagonal'}, optional
+        Whether to simulate points on a rectangular or hexagonal grid
+    vfmap : :py:class:`~pulse2percept.topography.VisualFieldMap`, optional
+        An instance of a :py:class:`~pulse2percept.topography.VisualFieldMap`
+        object that provides retinotopic mappings.
+        By default, :py:class:`~pulse2percept.topography.Polimeni2006Map` is
+        used.
+    n_gray : int, optional
+        The number of gray levels to use. If an integer is given, k-means
+        clustering is used to compress the color space of the percept into
+        ``n_gray`` bins. If None, no compression is performed.
+    noise : float or int, optional
+        Adds salt-and-pepper noise to each percept frame. An integer will be
+        interpreted as the number of pixels to subject to noise in each frame.
+        A float between 0 and 1 will be interpreted as a ratio of pixels to
+        subject to noise in each frame.
+    n_threads : int, optional
+        Number of CPU threads to use during parallelization using OpenMP. 
+        Defaults to max number of user CPU cores.
+
+    .. important ::
+        If you change important model parameters outside the constructor (e.g.,
+        by directly setting ``model.xrange = (-10, 10)``), you will have to call
+        ``model.build()`` again for your changes to take effect.
     """
     @property
     def regions(self):
@@ -32,14 +77,14 @@ class CortexSpatial(SpatialModel):
         super(CortexSpatial, self).__init__(**params)
 
         # Use [Polemeni2006]_ visual field map by default
-        if 'retinotopy' not in params.keys():
-            self.retinotopy = Polimeni2006Map(regions=self.regions)
+        if 'vfmap' not in params.keys():
+            self.vfmap = Polimeni2006Map(regions=self.regions)
         elif 'regions' in params.keys() and \
-            set(self.regions) != set(self.retinotopy.regions):
-            raise ValueError("Conflicting regions in provided retinotopy and regions")
+            set(self.regions) != set(self.vfmap.regions):
+            raise ValueError("Conflicting regions in provided vfmap and user-supplied regions parameter")
         else:
             # need to override self.regions
-            self.regions = self.retinotopy.regions
+            self.regions = self.vfmap.regions
 
         if not isinstance(self.regions, list):
             self.regions = [self.regions]
@@ -58,7 +103,7 @@ class CortexSpatial(SpatialModel):
     
 
     def plot(self, use_dva=False, style=None, autoscale=True, ax=None,
-             figsize=None, fc=None):
+             figsize=None, fc=None, **kwargs):
         """Plot the model
         Parameters
         ----------
@@ -79,6 +124,11 @@ class CortexSpatial(SpatialModel):
             (if exists) or create a new Axes object.
         figsize : (float, float), optional
             Desired (width, height) of the figure in inches
+        fc : matplotlib color, optional
+            Face color for the grid cells. If None, will use the default
+            matplotlib color cycle.
+        kwargs : dict, optional
+            Additional keyword arguments are passed on to Grid2D.plot()
         Returns
         -------
         ax : ``matplotlib.axes.Axes``
@@ -101,6 +151,20 @@ class CortexSpatial(SpatialModel):
             ax.set_yticklabels(np.array(ax.get_yticks()) / 1000)
             ax.set_xlabel('x (mm)')
             ax.set_ylabel('y (mm)')
+        return ax
+
+    def plot3D(self, style='scatter', ax=None, **kwargs):
+        if not self.is_built:
+            self.build()
+        ax = self.grid.plot3D(style=style, ax=ax, **kwargs)
+        # this is only ever for cortex right now so this is safe
+        ax.set_xticklabels(np.array(ax.get_xticks()) / 1000)
+        ax.set_yticklabels(np.array(ax.get_yticks()) / 1000)
+        ax.set_zticklabels(np.array(ax.get_zticks()) / 1000)
+        ax.set_xlabel('x (mm)')
+        ax.set_ylabel('y (mm)')
+        ax.set_zlabel('z (mm)')
+        ax.view_init(elev=20, azim=110)
         return ax
 
 
@@ -141,7 +205,7 @@ class ScoreboardSpatial(CortexSpatial):
         use ``xrange=(0, 1)`` and ``xystep=0.5``.
     grid_type : {'rectangular', 'hexagonal'}, optional
         Whether to simulate points on a rectangular or hexagonal grid
-    retinotopy : :py:class:`~pulse2percept.topography..VisualFieldMap`, optional
+    vfmap : :py:class:`~pulse2percept.topography..VisualFieldMap`, optional
         An instance of a :py:class:`~pulse2percept.topography.VisualFieldMap`
         object that provides retinotopic mappings.
         By default, :py:class:`~pulse2percept.topography.Polimeni2006Map` is
@@ -175,6 +239,7 @@ class ScoreboardSpatial(CortexSpatial):
         params = {
                     # radial current spread
                     'rho': 200,  
+                    'ndim' : [2, 3]
                  }
         return {**base_params, **params}
 
@@ -184,14 +249,28 @@ class ScoreboardSpatial(CortexSpatial):
                                         dtype=np.float32)
         y_el = np.array([earray[e].y for e in stim.electrodes],
                                         dtype=np.float32)
+        z_el = np.array([earray[e].z for e in stim.electrodes],
+                                        dtype=np.float32)
 
         # whether to allow current to spread between hemispheres
         separate = 0
         boundary = 0
-        if self.retinotopy.split_map:
+        if self.vfmap.split_map:
             separate = 1
-            boundary = self.retinotopy.left_offset/2
-        return np.sum([
+            boundary = self.vfmap.left_offset/2
+        if self.vfmap.ndim == 3:
+            return np.sum([
+                fast_scoreboard_3d(stim.data, x_el, y_el, z_el,
+                                self.grid[region].x.ravel(), 
+                                self.grid[region].y.ravel(),
+                                self.grid[region].z.ravel(),
+                                self.rho, self.thresh_percept, 
+                                separate, boundary, 
+                                self.n_threads)
+                for region in self.regions ],
+            axis = 0)
+        elif self.vfmap.ndim == 2:
+            return np.sum([
                 fast_scoreboard(stim.data, x_el, y_el,
                                 self.grid[region].x.ravel(), self.grid[region].y.ravel(),
                                 self.rho, self.thresh_percept, 
@@ -199,6 +278,8 @@ class ScoreboardSpatial(CortexSpatial):
                                 self.n_threads)
                 for region in self.regions ],
             axis = 0)
+        else:
+            raise ValueError("Invalid dimensionality of visual field map")
 
 
 class ScoreboardModel(Model):
@@ -237,7 +318,7 @@ class ScoreboardModel(Model):
         use ``xrange=(0, 1)`` and ``xystep=0.5``.
     grid_type : {'rectangular', 'hexagonal'}, optional
         Whether to simulate points on a rectangular or hexagonal grid
-    retinotopy : :py:class:`~pulse2percept.topography..VisualFieldMap`, optional
+    vfmap : :py:class:`~pulse2percept.topography..VisualFieldMap`, optional
         An instance of a :py:class:`~pulse2percept.topography.VisualFieldMap`
         object that provides retinotopic mappings.
         By default, :py:class:`~pulse2percept.topography.Polimeni2006Map` is

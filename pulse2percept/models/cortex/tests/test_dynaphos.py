@@ -15,7 +15,7 @@ def test_DynaphosModel():
     model = DynaphosModel(xrange=(-3, 3), yrange=(-3, 3), xystep=0.1).build()
 
     npt.assert_equal(model.regions, ['v1'])
-    npt.assert_equal(model.retinotopy.regions, ['v1'])
+    npt.assert_equal(model.vfmap.regions, ['v1'])
 
     # can't set frequency/pulse dur that don't match up
     with pytest.raises(ValueError):
@@ -73,15 +73,15 @@ def test_temporal_predict():
                                           stim_dur=sdur)
         percept = model.predict_percept(implant, t_percept=t_percept)
         bright_amp.append(percept.data.max())
-    bright_amp_ref = np.array([0.0, 0.208, 0.416, 0.66, 0.841])
+    bright_amp_ref = np.array([0.0, 0.0, 0.0, 0.66, 0.841])
     npt.assert_almost_equal(bright_amp, bright_amp_ref, decimal=3)
 
     # Test that default models give expected values
     implant = Orion(x=15000, stim={'55': BiphasicPulseTrain(freq=300, amp=100, phase_dur=0.17)})
     percept = model.predict_percept(implant)
-    npt.assert_equal(np.sum(percept.data > 0.0122), 149)
-    npt.assert_equal(np.sum(percept.data > 0.0375), 97)
-    npt.assert_equal(np.sum(percept.data > 0.3305), 50)
+    npt.assert_equal(np.sum(percept.data > 0.0122), 147)
+    npt.assert_equal(np.sum(percept.data > 0.0375), 96)
+    npt.assert_equal(np.sum(percept.data > 0.3305), 49)
     npt.assert_equal(np.sum(percept.data > 0.8451), 39)
     npt.assert_equal(np.sum(percept.data > 0.8883), 9)
 

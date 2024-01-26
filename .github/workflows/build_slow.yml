@@ -1,6 +1,6 @@
-name: build
+name: build_slow
 
-on: [push, pull_request]
+on: [pull_request]
 
 # By default, jobs run in parallel on a fresh instance of the virtual
 # environment. You can force sequential order by specifying a job's
@@ -8,15 +8,14 @@ on: [push, pull_request]
 jobs: 
 
   # Continuous integration: Run unit tests on all supported platforms whenever
-  # someone pushes a new commit or creates a pull request. 
+  # someone creates a pull request. 
   build:
     name: Building on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
-      # Test on all supported platforms using all supported Python versions:
       matrix:
-        python-version: ["3.11", "3.10", 3.9, 3.8]
-        os: [ubuntu-latest, ubuntu-20.04, windows-latest, macOS-latest]
+        python-version: ["3.10"]
+        os: [ubuntu-latest, windows-latest]
     
     steps:
     - uses: actions/checkout@v1
@@ -55,11 +54,12 @@ jobs:
         python --version
         pip freeze
         gcc --version
-    - name: Run test suite with pytest
+    - name: Run test suite with pytest (slow)
       run: |
+        pip install neuropythy
         mkdir test_dir
         cd test_dir
-        pytest --pyargs pulse2percept --cov-report=xml --cov=pulse2percept --doctest-modules
+        pytest --runslow --pyargs pulse2percept --cov-report=xml --cov=pulse2percept --doctest-modules
     - name: Upload coveragei report to codecov.io
       uses: codecov/codecov-action@v1
       # Cannot yet post coverage report as comments on the PR, but see:

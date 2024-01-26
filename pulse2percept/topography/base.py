@@ -27,9 +27,11 @@ class CoordinateGrid:
         """
         x : np.ndarray
         y : np.ndarray
-        def __init__(self, x, y):
+        z : np.ndarray
+        def __init__(self, x, y, z=None):
             self.x = x
             self.y = y
+            self.z = z
         def __eq__(self, other):
             if not isinstance(other, self.__class__):
                 return False
@@ -48,8 +50,12 @@ class CoordinateGrid:
             # Default python 2.6+ implementation
             return id(self) // 16
         def __repr__(self):
+            if self.z is not None:
+                return f"CoordinateGrid(x={self.x}, y={self.y}, z={self.z})"
             return f"CoordinateGrid(x={self.x}, y={self.y})"
         def __str__(self):
+            if self.z is not None:
+                return f"CoordinateGrid(x={self.x}, y={self.y}, z={self.z})"
             return f"CoordinateGrid(x={self.x}, y={self.y})"
 
 class Grid2D(PrettyPrint):
@@ -123,7 +129,7 @@ class Grid2D(PrettyPrint):
                     return self._grid[regionname]
                 else:
                     raise ValueError(f"Region {regionname} not found. Make sure the model is" \
-                        " built with the correct retinotopy")
+                        " built with the correct visual field map (vfmap)")
             return fn
         def setter(regionname):
             def fn(self, value):
@@ -156,7 +162,8 @@ class Grid2D(PrettyPrint):
         self.y_range = y_range
         self.step = step
         self.type = grid_type
-        self.retinotopy = None
+        self.vfmap = None
+        self.ndim = 2
         self.regions = []
         # Internally, coordinate grids for each region are stored in _grid
         self._grid = {}
@@ -240,9 +247,10 @@ class Grid2D(PrettyPrint):
             raise ValueError(f"Unknown key: {key}. Must be region name or \
                               integer position")
 
-    def build(self, retinotopy):
-        self.retinotopy = retinotopy
-        for region, map_fn in retinotopy.from_dva().items():
+    def build(self, vfmap):
+        self.vfmap = vfmap
+        self.ndim = self.vfmap.ndim
+        for region, map_fn in vfmap.from_dva().items():
             self._grid[region] = CoordinateGrid(*map_fn(self.x, self.y))
             if region not in self.regions:
                 self.regions.append(region)
@@ -251,7 +259,7 @@ class Grid2D(PrettyPrint):
                 self._register_regions([region])
 
     def plot(self, style='hull', autoscale=True, zorder=None, ax=None,
-            figsize=None, fc=None, use_dva=False, legend=False):
+            figsize=None, fc=None, use_dva=False, legend=False, surface=None):
         """Plot the extension of the grid
 
         Parameters
@@ -277,11 +285,15 @@ class Grid2D(PrettyPrint):
         use_dva : bool, optional
             Whether dva or transformed points should be plotted.  If True, will
             not apply any transformations, and if False, will apply all
-            transformations in self.retinotopy
+            transformations in self.vfmap
         legend : bool, optional
             Whether to add a plot legend. The legend is always added if there 
             are 2 or more regions. This only applies if there is 1 region.
+        surface : str, optional
+            Name of the surface to plot (only for vfmaps that accept a surface argument)
         """
+        if self.vfmap is not None and self.vfmap.ndim == 3:
+            print("Warning: Plotting 2D projection of 3D data. You might want plot3D() instead")
         if style.lower() not in ['hull', 'scatter', 'cell']:
             raise ValueError(f'Unknown plotting style "{style}". Choose from: '
                              f'"hull", "scatter", "cell"')
@@ -305,7 +317,7 @@ class Grid2D(PrettyPrint):
 
         transforms = [('dva', None)]
         if not use_dva:
-            transforms = self.retinotopy.from_dva().items()
+            transforms = self.vfmap.from_dva().items()
 
         color_map = {
             'ret' : 'gray',
@@ -348,23 +360,30 @@ class Grid2D(PrettyPrint):
                         continue
                     # transform the points
                     if transform is not None:
-                        vertices = np.array(transform(*vertices.T)).T
+                        if surface is None:
+                            vertices = np.array(transform(*vertices.T)[:2]).T
+                        else:
+                            vertices = np.array(transform(*vertices.T, surface=surface)[:2]).T
+                    labelstr = label if surface is None else f'{label}: {surface}'
                     patches.append(Polygon(vertices, alpha=0.3, ec='k', fc=color,
-                                        ls='--', zorder=zorder, label=label))
+                                        ls='--', zorder=zorder, label=labelstr))
                 legends.append(patches[0])
                 ax.add_collection(PatchCollection(patches, match_original=True,
-                                                zorder=zorder, label=label))
+                                                zorder=zorder, label=labelstr))
             else:
                 # Show either the convex hull or a scatter plot:
                 if transform is not None:
-                    x, y = transform(self.x, self.y)
+                    if surface is None:
+                        x, y = transform(self.x, self.y)[:2] # :2 in case of 3D
+                    else:
+                        x, y = transform(self.x, self.y, surface=surface)[:2]
                 points = np.vstack((x.ravel(), y.ravel()))
                 # Remove NaN values from the grid:
                 points = points[:, ~np.logical_or(*np.isnan(points))]
                 if style.lower() == 'hull':
-                    if self.retinotopy and self.retinotopy.split_map and not use_dva:
+                    if self.vfmap and self.vfmap.split_map and not use_dva:
                         # all split maps have an offset for left fovea
-                        divide = 0 if use_dva else self.retinotopy.left_offset / 2
+                        divide = 0 if use_dva else self.vfmap.left_offset / 2
                         points_right = points[:, points[0] >= divide]
                         points_left = points[:, points[0] <= divide]
                         if points_right.size > 0:
@@ -381,16 +400,17 @@ class Grid2D(PrettyPrint):
                                             fc=color, ls='--', zorder=zorder))
                     legends.append(ax.patches[-1])
                 elif style.lower() == 'scatter':
+                    labelstr = label if surface is None else f'{label}: {surface}'
                     ax.scatter(*points, alpha=0.4, ec=color, color=color, marker='+',
-                            zorder=zorder, label=label)
+                            zorder=zorder, label=labelstr)
         
         # This is needed in MPL 3.0.X to set the axis limit correctly:
         ax.autoscale_view()
         # plot boundary between hemispheres if it exists
         # but don't change the plot limits 
         lim = ax.get_xlim()
-        if self.retinotopy and self.retinotopy.split_map:
-            boundary = self.retinotopy.left_offset / 2
+        if self.vfmap and self.vfmap.split_map:
+            boundary = self.vfmap.left_offset / 2
             if use_dva:
                 boundary = 0
             if lim[0] < boundary < lim[1]:
@@ -398,11 +418,131 @@ class Grid2D(PrettyPrint):
 
         if len(transforms) > 1 or legend:
             if style in ['cell', 'hull']:
-                ax.legend(legends, [t[0] for t in transforms], loc='upper right')
+                if surface is None:
+                    ax.legend(legends, [t[0] for t in transforms], loc='upper right')
+                else:
+                    ax.legend(legends, [f'{t[0]}: {surface}' for t in transforms], loc='upper right')
             else:
                 ax.legend(loc='upper right')
 
         return ax
+    
+    def plot3D(self, style='scatter', ax=None, surface='midgray', color_by='region',
+               **kwargs):
+        """
+        Plots grid points in 3D space.
+        Note, you must have a 3D visual field map to use this method.
+        Parameters
+        ----------
+        style : {'scatter', 'cell'}, optional
+            * 'scatter': Scatter plot all grid points
+            * 'cell': Show the outline of each grid cell as a polygon. Note that
+              this can be costly for a high-resolution grid.
+        ax : matplotlib.axes._subplots.AxesSubplot, optional
+            A Matplotlib axes object. If None, will either use the current axes
+            (if exists) or create a new Axes object
+        surface : str, optional
+            Name of the cortical surface to plot (only with neuropythy vfmap)
+        color_by : str, optional
+            What to color the points by. Options are 'region' (default), 'eccentricity',
+            or 'angle'
+        kwargs : dict
+            Additional keyword arguments to pass to plt.figure() (figsize) or ax.scatter() or
+            ax.plot_trisurf()
+        """
+        # avoid circular import
+        from .neuropythy import NeuropythyMap
+        fig_kwargs = ['figsize']
+        if ax is None:
+            ax = plt.gca()
+            if ax.name != '3d':
+                plt.close()
+                fig = plt.figure(**{k:v for k, v in kwargs.items() if k in fig_kwargs})
+                ax = fig.add_subplot(111, projection='3d')
+        else:
+            if ax.name != '3d':
+                raise ValueError('ax must be a 3D axis')
+            
+        if self.vfmap.ndim != 3:
+            raise ValueError('vfmap must be 3D to plot in 3D')
+        if style.lower() not in ['scatter', 'cell']:
+            raise ValueError(f'Unknown plotting style "{style}". Choose from: '
+                             f'"scatter", "cell"')
+        if surface not in ['pial', 'midgray', 'white']:
+            raise ValueError(f'Unknown surface "{surface}". Choose from: '
+                             f'"pial", "midgray", "white"')
+        
+        color_map = {
+            'v1' : 'red',
+            'v2' : 'orange',
+            'v3' : 'green'
+        }    
+        default_kwargs = {
+            's' : 5,
+            'alpha' : 0.55,
+            'marker' : '+'
+        }
+
+        for region, transform in self.vfmap.from_dva().items():
+            # get 3D coordinates
+            vx, vy = self.x.flatten(), self.y.flatten()
+            if isinstance(self.vfmap, NeuropythyMap):
+                cx, cy, cz = transform(vx, vy, surface=surface)
+            else:
+                cx, cy, cz = transform(vx, vy)
+            
+            # get color
+            if 'c' in kwargs.keys():
+                color = kwargs['c']
+            elif color_by == 'region':
+                color = color_map[region] if region in color_map.keys() else 'gray'
+            elif color_by == 'eccentricity':
+                ecc = np.sqrt(vx**2 + vy**2)
+                color = ecc
+            elif color_by == 'angle':
+                angle = np.arctan2(vy, vx)
+                color = angle
+            else:
+                raise ValueError(f'Unknown color_by "{color_by}". Choose from: '
+                                 f'"region", "eccentricity", "angle"')
+            
+            
+            if style.lower() == 'scatter':
+                plotted = ax.scatter(cx, cy, cz, c=color, 
+                           alpha=default_kwargs['alpha'] if 'alpha' not in kwargs.keys() else kwargs['alpha'],
+                            s=default_kwargs['s'] if 's' not in kwargs.keys() else kwargs['s'],
+                            marker=default_kwargs['marker'] if 'marker' not in kwargs.keys() else kwargs['marker'],
+                            label=region if color_by == 'region' else None,
+                           **{k:v for k, v in kwargs.items() if (k not in fig_kwargs and
+                                                                 k not in default_kwargs.keys())})
+            elif style.lower() == 'cell':
+                # need to plot both hemispheres separately
+                bound = 0 if not self.vfmap.jitter_boundary else .5
+                left = vx > bound
+                right = vx < -bound
+                for i, idx in enumerate([right, left]):
+                    if np.sum(idx) == 0:
+                        continue
+                    triangulation = mpl.tri.Triangulation(vx[idx], vy[idx])
+                    label = None
+                    if i == 0 and color_by == 'region':
+                        label = region
+                    plotted = ax.plot_trisurf(cx[idx], cy[idx], cz[idx], triangles=triangulation.triangles,
+                                    color=color, label=label,
+                                    alpha=default_kwargs['alpha'] if 'alpha' not in kwargs.keys() else kwargs['alpha'],
+                                    **{k:v for k, v in kwargs.items() if (k not in fig_kwargs and
+                                                                        k not in default_kwargs.keys())})
+        if color_by == 'region':
+            ax.legend()
+        else:
+            plt.colorbar(plotted)
+        
+        return ax
+
+        
+            
+
+
     
     def __deepcopy__(self, memodict={}):
         if id(self) in memodict:
@@ -459,13 +599,13 @@ class VisualFieldMap(BaseModel):
 
     @abstractmethod
     def from_dva(self):
-        """ Returns a dict containing the region(s) that this retinotopy maps 
+        """ Returns a dict containing the region(s) that this visuotopy maps 
             to, and the corresponding mapping function(s).
         """
         raise NotImplementedError
 
     def to_dva(self):
-        """ Returns a dict containing the region(s) that this retinotopy maps 
+        """ Returns a dict containing the region(s) that this visuotopy maps 
             from, and the corresponding inverse mapping function(s). This 
             transform is optional for most models.
         """
@@ -473,7 +613,9 @@ class VisualFieldMap(BaseModel):
 
     def get_default_params(self):
         """Required to inherit from BaseModel"""
-        return {}
+        return {
+            'ndim': 2,
+        }
 
     def __eq__(self, other):
         """

@@ -17,8 +17,8 @@ class DynaphosModel(BaseModel):
     electrode are Gaussian blobs, with the size dictated by a magnification factor
     M determined by the electrode's position in the visual cortex.
     
-    Parameters:
-    -----------
+    Parameters
+    ----------
     dt : float, optional
         Sampling time step of the simulation (ms)
     regions : list of str, optional
@@ -36,6 +36,8 @@ class DynaphosModel(BaseModel):
         Activation decay constant (ms)
     sig_slope : float, optional
         Slope of the sigmoidal brightness curve
+    a_thr : float, optional
+        Activation threshold value, under which a phosphene is not generated
     a50 : float, optional
         Activation value for which a phosphene reaches half of its maximum brightness
     freq : float, optional
@@ -55,7 +57,7 @@ class DynaphosModel(BaseModel):
         use ``x_range=(0, 1)`` and ``xystep=0.5``.
     grid_type : {'rectangular', 'hexagonal'}, optional
         Whether to simulate points on a rectangular or hexagonal grid.
-    retinotopy : :py:class:`~pulse2percept.topography.VisualFieldMap`, optional
+    vfmap : :py:class:`~pulse2percept.topography.VisualFieldMap`, optional
         An instance of a :py:class:`~pulse2percept.topography.VisualFieldMap`
         object that provides visual field mappings.
         By default, :py:class:`~pulse2percept.topography.Polimeni2006Map` is
@@ -70,6 +72,7 @@ class DynaphosModel(BaseModel):
         frame. A float between 0 and 1 will be interpreted as a ratio of 
         pixels to subject to noise in each frame.
 
+        
     .. important ::
     
         If you change important model parameters outside the constructor (e.g.,
@@ -91,7 +94,7 @@ class DynaphosModel(BaseModel):
             self._regions = None
             super().__init__(**params)
 
-            self.retinotopy.regions = self.regions
+            self.vfmap.regions = self.regions
             self.grid = None
     
     def get_default_params(self):
@@ -102,7 +105,7 @@ class DynaphosModel(BaseModel):
                 'xystep': 0.25,  # dva
                 'grid_type': 'rectangular',
                 # Use [Polemeni2006]_ visual field map with parameters specified in the paper
-                'retinotopy': Polimeni2006Map(a=0.75,k=17.3,b=120,alpha1=0.95),
+                'vfmap': Polimeni2006Map(a=0.75,k=17.3,b=120,alpha1=0.95),
                 # Number of gray levels to use in the percept:
                 'n_gray': None,
                 # Salt-and-pepper noise on the output:
@@ -127,6 +130,8 @@ class DynaphosModel(BaseModel):
                 'sig_slope': 19152642.500946816,
                 # A50 - activation for which a phosphene reaches half of its maximum brightness
                 'a50': 1.057631326853325e-07,
+                # A_Thr - activation threshold under which a phosphene is not generated
+                'a_thr': 9.141886000943878e-08,
                 # Default stimulus frequency (Hz)
                 'freq': 300,
                 # Default stimulus pulse duration (ms)
@@ -166,7 +171,7 @@ class DynaphosModel(BaseModel):
         # Build the spatial grid:
         self.grid = Grid2D(self.xrange, self.yrange, step=self.xystep,
                            grid_type=self.grid_type)
-        self.grid.build(self.retinotopy)
+        self.grid.build(self.vfmap)
         self._build()
         self.is_built = True
         return self
@@ -180,18 +185,18 @@ class DynaphosModel(BaseModel):
         # whether to allow current to spread between hemispheres
         separate = 0
         boundary = 0
-        if self.retinotopy.split_map:
+        if self.vfmap.split_map:
             separate = 1
-            boundary = self.retinotopy.left_offset/2
+            boundary = self.vfmap.left_offset/2
 
         phosphene_locations = {}
         for region in self.regions:
-            phosphene_locations[region] = self.retinotopy.to_dva()[region](x_el, y_el)
+            phosphene_locations[region] = self.vfmap.to_dva()[region](x_el, y_el)
 
         theta, r = cart2pol(*phosphene_locations['v1'])
 
         # magnification factors (mm/dva)
-        M = self.retinotopy.k * (self.retinotopy.b - self.retinotopy.a) / ((r + self.retinotopy.a) * (r + self.retinotopy.b))
+        M = self.vfmap.k * (self.vfmap.b - self.vfmap.a) / ((r + self.vfmap.a) * (r + self.vfmap.b))
 
         # excitability constant uA/mm^2
         K = self.excitability
@@ -233,6 +238,8 @@ class DynaphosModel(BaseModel):
         Q = np.zeros(len(x_el))
         # holds diameter of activated cortical tissue
         D = np.zeros(len(x_el))
+        # holds sigma for gaussian phosphene generation
+        sigma = np.zeros(len(x_el))
         # constant for trace decay (seconds)
         tau_trace = self.tau_trace
         # input effect for trace
@@ -253,6 +260,9 @@ class DynaphosModel(BaseModel):
             # but only reset amp to 0 if stimulus is updated at all during the frame
             if stim_idx + 1 < n_stim and t_sim >= stim.time[stim_idx + 1]:
                 amp = np.zeros(len(x_el))
+            # or stimulus has ended but we still want to predict
+            if t_sim > stim.time[-1]:
+                amp = np.zeros(len(x_el))
             while stim_idx + 1 < n_stim and t_sim >= stim.time[stim_idx + 1]:
                 stim_idx += 1
                 amp = np.maximum(amp, stim.data[:,stim_idx])
@@ -263,7 +273,8 @@ class DynaphosModel(BaseModel):
             # update phosphene size
             D = 2 * np.sqrt(amp / K) # mm
             P = (D / M) # dva
-            sigma = np.clip(P / 2, 1e-22, None)
+            # calculate sigma for gaussian (only update sigma if amplitude > 0)
+            sigma = np.where(amp > 0, np.clip(P / 2, 1e-22, None), sigma) 
             # get activation (convert Ieff from uA to A)
             A = A + ((-A / (self.tau_act / 1000)) + Ieff * 1e-6) * (self.dt / 1000)
             # get brightness
@@ -286,7 +297,7 @@ class DynaphosModel(BaseModel):
                 # (fast) way to compare two floating point numbers:
                 for el_idx in range(stim.data.shape[0]):
                     gauss = np.zeros(self.grid['dva'].x.shape)
-                    if A[el_idx] != 0:
+                    if A[el_idx] >= self.a_thr:
                         gauss = create_gaussian(phosphene_locations['v1'][0][el_idx], 
                                                 phosphene_locations['v1'][1][el_idx], 
                                                 sigma[el_idx], x_el[el_idx])
